@@ -14,6 +14,7 @@ import bs4
 from plotly import offline as py
 import plotly.graph_objs as go
 from plotly import tools
+import math
 
 
 Data = namedtuple('Data', ['ISSN', 'TITULO', 'ESTRATO'])
@@ -47,7 +48,7 @@ def save_data(filename, all_data, compare = False):
     
     :param str filename: output file name.
     :param list all_data: list of Data namedtuples to be saved on file.
-    :param compare: if provided, must be a dictionary for cross-referencing Data.ISSN and qualis score.
+    :param compare: dictionary for cross-referencing Data.ISSN and qualis score.
     '''
     
     print("Saving to:", filename)
@@ -61,6 +62,17 @@ def save_data(filename, all_data, compare = False):
                 data = [x for x in data] + [compare.get(data.ISSN, 'N/A')]
             f.write('\t'.join(data)+'\n')
 
+
+def load_data(filename):
+    global data
+    with open(filename, 'r') as f:
+        data = f.readlines()
+    alldata = []
+    for line in data:
+        if not line.startswith('ISSN'):
+            issn, titulo, estrato = line.split('\t')
+            alldata.append(Data(issn.strip(), titulo.strip(), estrato.strip()))
+    return alldata
 
 def read_pdf(filename):
     '''
@@ -99,13 +111,25 @@ def fetch_www(qualislevs):
     Scrape Qualis data (for "Medicina II") on the Sucupira Platform.
     :param list qualislevs: list of Qualis classifications e.g. ['A1', 'A2'...]
     '''
-    url = 'https://sucupira.capes.gov.br/sucupira/public/consultas/coleta/veiculoPublicacaoQualis/listaConsultaGeralPeriodicos.xhtml'
+    url = 'https://sucupira.capes.gov.br/sucupira/public/consultas/coleta/' \
+          'veiculoPublicacaoQualis/listaConsultaGeralPeriodicos.xhtml'
     r = requests.get(url)
     cookies = r.cookies
-    viewstate = re.findall('name=\"javax\.faces\.ViewState\" id=\"javax\.faces\.ViewState\" value=\"([\S]*?)\" autocomplete=', r.text)[0]
+    viewstate = re.findall('name=\"javax\.faces\.ViewState\" id=\"javax\.faces\.ViewState\"' 
+                           'value=\"([\S]*?)\" autocomplete=', r.text)[0]
     
-    first = '?form=form&form%3Aevento=156&form%3AcheckArea=on&form%3Aarea=16&form%3Aissn%3Aissn=&form%3Aj_idt49=&form%3AcheckEstrato=on&form%3Aestrato={}&form%3Aconsultar=Consultar&javax.faces.ViewState={}'
-    nexts = '?form=form&form%3Aevento=156&form%3AcheckArea=on&form%3Aarea=16&form%3Aissn%3Aissn=&form%3Aj_idt49=&form%3AcheckEstrato=on&form%3Aestrato={}&form%3Aj_idt60%3Aj_idt67={}&javax.faces.ViewState={}&javax.faces.source=form%3Aj_idt60%3AbotaoProxPagina&javax.faces.partial.event=click&javax.faces.partial.execute=form%3Aj_idt60%3AbotaoProxPagina%20%40component&javax.faces.partial.render=%40component&javax.faces.behavior.event=action&org.richfaces.ajax.component=form%3Aj_idt60%3AbotaoProxPagina&AJAX%3AEVENTS_COUNT=1&javax.faces.partial.ajax=true'
+    first = '?form=form&form%3Aevento=156&form%3AcheckArea=on&form%3Aarea=16'\
+            '&form%3Aissn%3Aissn=&form%3Aj_idt49=&form%3AcheckEstrato=on'\
+            '&form%3Aestrato={}&form%3Aconsultar=Consultar&javax.faces.ViewState={}'
+    nexts = '?form=form&form%3Aevento=156&form%3AcheckArea=on&form%3Aarea=16'\
+            '&form%3Aissn%3Aissn=&form%3Aj_idt49=&form%3AcheckEstrato=on'\
+            '&form%3Aestrato={}&form%3Aj_idt60%3Aj_idt67={}&javax.faces.ViewState={}'\
+            '&javax.faces.source=form%3Aj_idt60%3AbotaoProxPagina'\
+            '&javax.faces.partial.event=click&javax.faces.partial.execute='\
+            'form%3Aj_idt60%3AbotaoProxPagina%20%40component&'\
+            'javax.faces.partial.render=%40component&javax.faces.behavior.event=action'\
+            '&org.richfaces.ajax.component=form%3Aj_idt60%3AbotaoProxPagina&AJAX%3AEVENTS_COUNT=1'\
+            '&javax.faces.partial.ajax=true'
     
     select = dict(zip(qualislevs, range(21, 21+len(qualislevs))))
     
@@ -135,41 +159,64 @@ def fetch_www(qualislevs):
     return journals_old
 
 
+def plot_data(plotting_levels, journals_by_level, comparison_dict, prefix, figname):
+    '''
+    Plot data (and save as html).
+    :param list plotting_levels: list of qualis levels to be plotted individually as subplots.
+    :param list journals_by_level: list of Data namedtuples with journal data.
+    :param dict comparison_dict: index dictionary linking journal ISSNs to plotting_levels
+    :param str prefix: prefix for subplot titles.
+    :param str figname: filename for the plotted figure.
+    '''
+    journal_levels = sorted(set([item.ESTRATO for item in journals_by_level]))
+    rows = math.ceil(len(plotting_levels) / 2)
+    fig = tools.make_subplots(rows=rows, cols=2, subplot_titles=[prefix+lev for lev in plotting_levels])
+    all_counts = dict()
+    for j, plev in enumerate(plotting_levels):
+        all_counts[plev] = [0 for i in range(len(journal_levels))]
+        for i, jlev in enumerate(journal_levels):
+            counts = sum([item.ESTRATO == jlev and comparison_dict.get(item.ISSN, False) == plev \
+                          for item in journals_by_level])
+            all_counts[plev][i] = counts
+        fig.add_trace(go.Bar(x=journal_levels, y=all_counts[plev]), int(j/2)+1, int(j%2)+1)
+    fig['layout'].update(hovermode='closest', height=360*rows,
+                     showlegend=False)
+    py.plot(fig, filename=figname)
+    
+
 if __name__ == '__main__':
+    oldlevs = ['A1', 'A2', 'B1', 'B2', 'B3', 'B4', 'B5', 'C']
+    vals = {'A1': 100, 'A2': 80, 'B1': 60, 'B2': 40, 'B3': 20, 'B4': 10}
+
+
+    '''
     print("Importing data from qualis PDF...")
     pdfname = './2019_novo_qualis.pdf'
     journals_new = read_pdf(pdfname)
     save_data("novo_qualis.tsv", journals_new)
 
     print("Fetching current Qualis data...")
-    oldlevs = ['A1', 'A2', 'B1', 'B2', 'B3', 'B4', 'B5', 'C']
     journals_old = fetch_www(oldlevs)
     save_data('medicina_II.tsv', journals_old)
+    '''
+    journals_new = load_data("novo_qualis.tsv")
+    journals_old = load_data("medicina_II.tsv")
+    
     
     new_dict = OrderedDict((x.ISSN, x.ESTRATO) for x in journals_new)
     
     print("Adding new classification to old data...")
     save_data('medicina_II_plusNew.tsv', journals_old, new_dict)
     
-    print('Plotting data...')
+    print('Plotting old vs new classification...')
     newlevs = sorted(set([item.ESTRATO for item in journals_new]))
-    fig = tools.make_subplots(rows=5, cols = 2, subplot_titles=['Novo_'+lev for lev in newlevs])
-    all_counts = dict()
-    for j, new in enumerate(newlevs):
-        all_counts[new] = [0 for i in range(len(oldlevs))]
-        for i, old in enumerate(oldlevs):
-            counts = sum([item.ESTRATO == old and new_dict.get(item.ISSN, False) == new \
-                          for item in journals_old])
-            all_counts[new][i] = counts
-        fig.add_trace(go.Bar(x=oldlevs, y=all_counts[new]), int(j/2)+1, int(j%2)+1)
-    fig['layout'].update(hovermode='closest', height=1800,
-                     showlegend=False)
-    py.plot(fig, filename="qualis_comparison2.html")
-    
-    
-    
-    
-            
+    plot_data(newlevs, journals_old, new_dict, "Novo_", "Qualis_by_new.html")
+
+    print('Plotting new vs old classification...')
+    old_dict = OrderedDict((x.ISSN, x.ESTRATO) for x in journals_old)
+    plot_data(oldlevs, journals_new, old_dict, "Ex_", "Qualis_by_old.html")
+
+
     
     
     
